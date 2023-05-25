@@ -11,11 +11,13 @@ import sys
 import numpy as np
 import os
 from utils.img_utils import tensor2img
+from sklearn.model_selection import train_test_split
 
 
 class Args:
     def __init__(self,root, epochs, batch_size, dataset, mgpu, lrs_min,\
-                 lrs, lr, type_lr, checkpoint_path, encoder_block, optim, img_size):
+                 lrs, lr, type_lr, checkpoint_path, encoder_block, optim,\
+                 img_size, choice_gpu, mini_batch_size):
         self.root = root
         self.epochs = epochs
         self.batch_size = batch_size
@@ -29,19 +31,23 @@ class Args:
         self.encoder_block = encoder_block
         self.optim = optim
         self.img_size = img_size
+        self.choice_gpu = choice_gpu
+        self.mini_batch_size = mini_batch_size
         
 
 
 def build(args):
     if torch.cuda.is_available():
-        device = torch.device("cuda")
+        device = torch.device(f"cuda:{args.choice_gpu}")
     else:
         device = torch.device("cpu")
 
+    print("device:", device)
  
     img_path = glob.glob(args.root) 
-    train_dataloader = preprocess_train(img_path, train_transformation, args.batch_size)
-    val_dataloader = preprocess_test(img_path, test_transformation, 1)
+    img_path_train, img_path_test = train_test_split(img_path, test_size=0.2, random_state=42)
+    train_dataloader = preprocess_train(img_path_train, train_transformation, args.batch_size)
+    val_dataloader = preprocess_test(img_path_test, test_transformation, 1)
     
 
     model = MixNet()
@@ -109,16 +115,16 @@ def build(args):
 
 
 
-def train_epoch(model, device, train_loader, optimizer, epoch, loss_fn):
+def train_epoch(model, device, train_loader, optimizer, epoch, loss_fn, args):
     t = time.time()
     model.train()
     loss_accumulator = []
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
-        for k in range(0, data.shape[0], 4):
-            data_input = data[k:k + 4]
-            target_input = target[k:k+4]
+        for k in range(0, data.shape[0], args.mini_batch_size):
+            data_input = data[k:k + args.mini_batch_size]
+            target_input = target[k:k+args.mini_batch_size]
             output = model(data_input)
             loss = loss_fn(output, target_input)
             loss.backward()
@@ -126,12 +132,12 @@ def train_epoch(model, device, train_loader, optimizer, epoch, loss_fn):
         loss_accumulator.append(loss.item())
         if batch_idx + 1 < len(train_loader):
             print(
-                "\rTrain Epoch: {} [{}/{} ({:.1f}%)]\tLoss: {:.6f}\tTime: {:.6f}".format(
+                "\rTrain Epoch: {} [{}/{} ({:.1f}%)] | Loss: {:.6f} | Time: {:.6f}".format(
                     epoch, (batch_idx + 1) * len(data), len(train_loader.dataset), 100.0 * (batch_idx + 1) / len(train_loader),
                     loss.item(), time.time() - t, ), end="", )
         else:
             print(
-                "\rTrain Epoch: {} [{}/{} ({:.1f}%)]\tAverage loss: {:.6f}\tTime: {:.6f}".format(
+                "\rTrain Epoch: {} [{}/{} ({:.1f}%)] | Average loss: {:.6f} | Time: {:.6f}".format(
                     epoch, (batch_idx + 1) * len(data), len(train_loader.dataset), 100.0 * (batch_idx + 1) / len(train_loader),
                     np.mean(loss_accumulator), time.time() - t, ) )
 
@@ -159,12 +165,12 @@ def test(model, device, test_loader, epoch, psnr_metric, ssim_metric, phase):
         
         if batch_idx + 1 < len(test_loader):
             print(
-                "\r{}  Epoch: {} [{}/{} ({:.1f}%)]\tPSNR: {:.6f}\tSSIM: {:.6f}\tTime: {:.6f}".format(
+                "\r{}  Epoch: {} [{}/{} ({:.1f}%)] | PSNR: {:.6f} | SSIM: {:.6f} | Time: {:.6f}".format(
                     phase, epoch, batch_idx + 1, len(test_loader), 100.0 * (batch_idx + 1) / len(test_loader),
                     np.mean(PSNR_metrics), np.mean(SSIM_metrics), time.time() - t, ), end="", )
         else:
             print(
-                "\r{}  Epoch: {} [{}/{} ({:.1f}%)]\tPSNR: {:.6f}\tSSIM: {:.6f}\tTime: {:.6f}".format(
+                "\r{}  Epoch: {} [{}/{} ({:.1f}%)] | PSNR: {:.6f} | SSIM: {:.6f} | Time: {:.6f}".format(
                     phase, epoch, batch_idx + 1, len(test_loader), 100.0 * (batch_idx + 1) / len(test_loader),
                     np.mean(PSNR_metrics), np.mean(SSIM_metrics), time.time() - t, ))
 
@@ -185,9 +191,9 @@ def train(args):
     
     for epoch in range(1, args.epochs + 1):
         try:
-            # loss = train_epoch(
-            #     model, device, train_dataloader, optimizer, epoch, loss_fn
-            # )
+            loss = train_epoch(
+                model, device, train_dataloader, optimizer, epoch, loss_fn, args
+            )
             test_measure_psnr, test_measure_ssim = test(
                 model, device, val_dataloader, epoch, psnr_metric, ssim_metric, "val"
             )
@@ -222,11 +228,11 @@ def main(args):
     train(args)
 
 
-if __name__ == "__main__":
-    args = Args(
+args = Args(
     root="/home/tran/ImageRestoration/real_1204/*.png", 
     epochs=100, 
-    batch_size=4, 
+    batch_size=4,
+    mini_batch_size=4, 
     dataset="real_1204",
     mgpu="false",
     lrs="true",
@@ -236,8 +242,12 @@ if __name__ == "__main__":
     checkpoint_path = None,
     encoder_block="MSK",
     optim="NAdam",
-    img_size = 256
+    img_size = 256,
+    choice_gpu = 1
 )
+
+
+if __name__ == "__main__":
     
     main(args)
     
